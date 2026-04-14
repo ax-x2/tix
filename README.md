@@ -1,10 +1,10 @@
 # tix
 
-<p align="center">
-  <img src="tix_logo.svg" alt="tix logo" width="220">
-</p>
+🕞 tix is a small rust alarm and timer cli.
 
-tix is a small rust alarm and timer cli.
+<p align="center">
+  <img src="tix_logo.svg" alt="tix logo" width="360">
+</p>
 
 you can use it for:
 - relative timers like `tix 10m`

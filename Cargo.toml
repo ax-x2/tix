@@ -2,7 +2,7 @@
 name = "tix"
 version = "0.1.0"
 edition = "2024"
-description = "a lightweight cli alarm clock and timer with foreground and background modes"
+description = "tix - cli alarm clock and timer with foreground and background modes"
 readme = "README.md"
 license = "MIT"
 documentation = "https://docs.rs/tix"
