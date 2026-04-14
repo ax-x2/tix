@@ -1,0 +1,51 @@
+# example tix config
+# copy this file to:
+#   ~/.config/tix/config.toml
+
+# IANA timezone used for parsing and rendering local alarm times.
+timezone = "Europe/Berlin"
+
+# date parsing order for slash-separated dates.
+# supported: dmy, mdy, ymd
+date_order = "dmy"
+
+# clock display style.
+# supported: 24h, 12h
+time_notation = "24h"
+
+# default run mode when no CLI override is provided.
+# supported: background, foreground
+default_mode = "background"
+
+# stop the alarm automatically after N seconds.
+# use 0 to keep ringing until stopped manually.
+auto_stop_seconds = 0
+
+# volume in the inclusive range 0.0..=1.0.
+volume = 0.20
+
+# optional custom sound file.
+# absolute paths are supported.
+# relative paths are resolved from ~/.config/tix/
+# set to "none" or remove the key to use the built-in tone fallback.
+sound_file = "none"
+
+[foreground]
+# minimum effective refresh interval is 100ms.
+refresh_interval_ms = 250
+
+# show the parsed input string.
+show_input = true
+
+# show the current local date/time.
+show_current_datetime = true
+
+# show the target alarm date/time.
+show_target_datetime = true
+
+# show the remaining time until trigger.
+show_remaining = true
+
+# remaining-time renderer.
+# supported: digital, human
+timer_style = "digital"

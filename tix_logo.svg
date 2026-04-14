@@ -1,0 +1,48 @@
+<svg width="680" height="360" viewBox="0 0 680 360" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">tix logo</title>
+  <desc id="desc">Minimal logo for tix, a Rust alarm clock CLI. Features a geometric clock icon, monospace wordmark, and terminal cursor.</desc>
+
+  <defs>
+    <linearGradient id="clockAccent" x1="40" y1="86" x2="172" y2="274" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F59E0B"/>
+      <stop offset="1" stop-color="#FB7185"/>
+    </linearGradient>
+    <linearGradient id="handAccent" x1="80" y1="108" x2="152" y2="228" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2DD4BF"/>
+      <stop offset="1" stop-color="#22C55E"/>
+    </linearGradient>
+    <filter id="softShadow" x="0" y="0" width="220" height="220" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0F172A" flood-opacity="0.10"/>
+    </filter>
+    <style>
+      .fg { color: #F8FAFC; }
+      .wordmark { fill: currentColor; }
+      .subtle-1 { fill: currentColor; opacity: 0.82; }
+      .subtle-2 { fill: currentColor; opacity: 0.58; }
+    </style>
+  </defs>
+
+  <!-- Icon -->
+  <g transform="translate(32 32)" filter="url(#softShadow)">
+    <path d="M12 148L42 118L12 88" stroke="#14B8A6" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="92" cy="118" r="64" stroke="url(#clockAccent)" stroke-width="10"/>
+    <path d="M92 38V54" stroke="#F59E0B" stroke-width="8" stroke-linecap="round"/>
+    <path d="M92 182V198" stroke="#F59E0B" stroke-width="8" stroke-linecap="round"/>
+    <path d="M12 118H28" stroke="#F59E0B" stroke-width="8" stroke-linecap="round"/>
+    <path d="M156 118H172" stroke="#F59E0B" stroke-width="8" stroke-linecap="round"/>
+    <path d="M92 118V78" stroke="url(#handAccent)" stroke-width="10" stroke-linecap="round"/>
+    <path d="M92 118L64 146" stroke="url(#handAccent)" stroke-width="10" stroke-linecap="round"/>
+    <circle cx="92" cy="118" r="7" fill="#F59E0B"/>
+    <path d="M144 172H176" stroke="#14B8A6" stroke-width="8" stroke-linecap="round"/>
+  </g>
+
+  <!-- Wordmark -->
+  <g transform="translate(204 0)" class="fg">
+    <text x="0" y="196" class="wordmark" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="108" font-weight="700" letter-spacing="-8">tix</text>
+    <rect x="280" y="110" width="12" height="92" rx="6" fill="#F59E0B">
+      <animate attributeName="opacity" values="1;1;0;0;1" dur="1.2s" repeatCount="indefinite"/>
+    </rect>
+    <text x="4" y="244" fill="#0F766E" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="22" font-weight="500" letter-spacing="1.5">&gt; alarm clock cli</text>
+    <text x="4" y="276" class="subtle-2" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace" font-size="16" font-weight="500" letter-spacing="1.2">rust-powered • minimal • time-based</text>
+  </g>
+</svg>

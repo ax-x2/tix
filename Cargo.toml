@@ -1,0 +1,28 @@
+[package]
+name = "tix"
+version = "0.1.0"
+edition = "2024"
+description = "a lightweight cli alarm clock and timer with foreground and background modes"
+readme = "README.md"
+license = "MIT"
+documentation = "https://docs.rs/tix"
+keywords = ["alarm", "timer", "cli", "clock", "reminder"]
+categories = ["command-line-utilities", "date-and-time"]
+include = [
+    "Cargo.toml",
+    "README.md",
+    "tix_logo.svg",
+    "LICENSE-MIT",
+    "src/**",
+]
+
+[dependencies]
+chrono = { version = "0.4", features = ["clock"] }
+chrono-tz = "0.10"
+ctrlc = "3.5"
+humantime = "2.3"
+iana-time-zone = "0.1"
+libc = "0.2"
+rodio = "0.22"
+serde = { version = "1", features = ["derive"] }
+toml = "1.1"
