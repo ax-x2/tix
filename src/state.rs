@@ -7,24 +7,31 @@ use std::io;
 use std::io::ErrorKind;
 #[cfg(target_os = "macos")]
 use std::mem;
+use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command as ProcessCommand, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::config_root;
-use crate::types::{ActiveAlarmState, AlarmAudioConfig, AppResult};
+use crate::types::{ActiveAlarmState, AlarmAudioConfig, AlarmNotificationConfig, AppResult};
 
 pub fn schedule_background_alarm(
     spec_text: &str,
     target_utc: DateTime<Utc>,
     auto_stop_seconds: u64,
     audio: &AlarmAudioConfig,
+    notifications: AlarmNotificationConfig,
 ) -> AppResult<ActiveAlarmState> {
     let alarm_id = generate_alarm_id()?;
-    let pid = spawn_background_worker(&alarm_id, target_utc, auto_stop_seconds, audio)?;
+    let pid = spawn_background_worker(
+        &alarm_id,
+        target_utc,
+        auto_stop_seconds,
+        audio,
+        notifications,
+    )?;
     let state = ActiveAlarmState {
         id: alarm_id,
         pid,
@@ -218,6 +225,7 @@ fn spawn_background_worker(
     target_utc: DateTime<Utc>,
     auto_stop_seconds: u64,
     audio: &AlarmAudioConfig,
+    notifications: AlarmNotificationConfig,
 ) -> AppResult<u32> {
     let executable =
         env::current_exe().map_err(|err| format!("failed to resolve current executable: {err}"))?;
@@ -242,6 +250,26 @@ fn spawn_background_worker(
         .arg(auto_stop_seconds.to_string())
         .arg("--volume")
         .arg(audio.volume.to_string())
+        .arg("--notifications-enabled")
+        .arg(if notifications.enabled {
+            "true"
+        } else {
+            "false"
+        })
+        .arg("--notifications-clickable")
+        .arg(if notifications.clickable {
+            "true"
+        } else {
+            "false"
+        })
+        .arg("--notifications-timeout-ms")
+        .arg(notifications.timeout_ms.to_string())
+        .arg("--notifications-show-stop-button")
+        .arg(if notifications.show_stop_button {
+            "true"
+        } else {
+            "false"
+        })
         .stdin(Stdio::from(stdin_null))
         .stdout(Stdio::from(stdout_null))
         .stderr(Stdio::inherit());
@@ -272,6 +300,7 @@ fn spawn_background_worker(
     _target_utc: DateTime<Utc>,
     _auto_stop_seconds: u64,
     _audio: &AlarmAudioConfig,
+    _notifications: AlarmNotificationConfig,
 ) -> AppResult<u32> {
     Err("background alarms are only supported on Unix right now; use --foreground".to_string())
 }
@@ -528,7 +557,8 @@ fn macos_procargs_match_worker(
         return false;
     }
 
-    let Some((_, mut remainder)) = next_nul_terminated(&raw[mem::size_of::<libc::c_int>()..]) else {
+    let Some((_, mut remainder)) = next_nul_terminated(&raw[mem::size_of::<libc::c_int>()..])
+    else {
         return false;
     };
     while remainder.first() == Some(&0) {
@@ -633,7 +663,11 @@ mod tests {
         raw.extend_from_slice(&[0, 0]);
         raw.extend_from_slice(b"/tmp/tix\0__worker\0--alarm-id\0abc123\0");
 
-        assert!(macos_procargs_match_worker(&raw, executable, Some("abc123")));
+        assert!(macos_procargs_match_worker(
+            &raw,
+            executable,
+            Some("abc123")
+        ));
         assert!(!macos_procargs_match_worker(&raw, executable, Some("zzz")));
     }
 }

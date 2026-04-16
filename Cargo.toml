@@ -26,3 +26,6 @@ libc = "0.2"
 rodio = "0.22"
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+notify-rust = "4.14"

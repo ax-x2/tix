@@ -1,8 +1,11 @@
 use chrono::{DateTime, Utc};
+#[cfg(target_os = "linux")]
+use notify_rust::{Hint, NotificationHandle};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use notify_rust::{Notification, Timeout};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source, source::SineWave};
 use std::fs::File;
 use std::io::{self, BufReader, Write};
-use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -14,15 +17,17 @@ use std::time::{Duration, Instant};
 use crate::config::resolve_sound_file_path;
 use crate::display::ForegroundRenderer;
 use crate::state::ActiveAlarmGuard;
-use crate::types::{AlarmAudioConfig, AppResult, StopControl};
+use crate::types::{AlarmAudioConfig, AlarmNotificationConfig, AppResult, StopControl};
 
 pub fn run_alarm_session(
+    alarm_id: Option<&str>,
     target_utc: DateTime<Utc>,
     auto_stop_seconds: u64,
     audio: &AlarmAudioConfig,
     renderer: Option<&mut ForegroundRenderer>,
     log_events: bool,
     detached: bool,
+    notifications: AlarmNotificationConfig,
 ) -> AppResult<()> {
     let control = install_stop_signal_handler()?;
     wait_until(target_utc, &control, renderer)?;
@@ -36,7 +41,10 @@ pub fn run_alarm_session(
     if log_events {
         println!("alarm ringing. press ctrl-c to stop.");
     }
-    ring_alarm(audio, auto_stop_seconds, &control, log_events, detached);
+    if detached {
+        send_background_alarm_notification(alarm_id, notifications, &control);
+    }
+    ring_alarm(audio, auto_stop_seconds, &control, log_events);
     Ok(())
 }
 
@@ -45,9 +53,19 @@ pub fn run_background_worker(
     target_utc: DateTime<Utc>,
     auto_stop_seconds: u64,
     audio: AlarmAudioConfig,
+    notifications: AlarmNotificationConfig,
 ) -> AppResult<()> {
-    let _guard = ActiveAlarmGuard::new(alarm_id)?;
-    run_alarm_session(target_utc, auto_stop_seconds, &audio, None, false, true)
+    let _guard = ActiveAlarmGuard::new(alarm_id.clone())?;
+    run_alarm_session(
+        Some(&alarm_id),
+        target_utc,
+        auto_stop_seconds,
+        &audio,
+        None,
+        false,
+        true,
+        notifications,
+    )
 }
 
 pub fn test_alarm_audio(audio: &AlarmAudioConfig) -> AppResult<()> {
@@ -83,14 +101,19 @@ fn install_stop_signal_handler() -> AppResult<StopControl> {
     let stop = Arc::new(AtomicBool::new(false));
     let (wake_tx, wake_rx) = mpsc::sync_channel(1);
     let signal_stop = stop.clone();
+    let signal_wake_tx = wake_tx.clone();
 
     ctrlc::set_handler(move || {
         signal_stop.store(true, Ordering::Relaxed);
-        let _ = wake_tx.try_send(());
+        let _ = signal_wake_tx.try_send(());
     })
     .map_err(|err| format!("failed to install signal handler: {err}"))?;
 
-    Ok(StopControl { stop, wake_rx })
+    Ok(StopControl {
+        stop,
+        wake_tx,
+        wake_rx,
+    })
 }
 
 fn wait_until(
@@ -155,7 +178,6 @@ fn ring_alarm(
     auto_stop_seconds: u64,
     control: &StopControl,
     log_events: bool,
-    detached: bool,
 ) {
     let auto_stop = if auto_stop_seconds == 0 {
         None
@@ -170,8 +192,6 @@ fn ring_alarm(
             eprintln!("tix: audio backend unavailable ({err}); using terminal bell fallback");
             AlarmPlayer::BellOnly {
                 next_pulse_at: Instant::now(),
-                detached,
-                notified: false,
             }
         }
     };
@@ -204,8 +224,6 @@ enum AlarmPlayer {
     },
     BellOnly {
         next_pulse_at: Instant,
-        detached: bool,
-        notified: bool,
     },
 }
 
@@ -250,16 +268,7 @@ impl AlarmPlayer {
                 }
                 PlaybackKind::TonePulse => append_tone_pulse(player),
             },
-            AlarmPlayer::BellOnly {
-                detached,
-                notified,
-                ..
-            } => {
-                if *detached && !*notified {
-                    send_background_alarm_notification();
-                    *notified = true;
-                }
-            }
+            AlarmPlayer::BellOnly { .. } => {}
         }
     }
 
@@ -304,15 +313,7 @@ impl AlarmPlayer {
                     append_tone_pulse(player);
                 }
             }
-            AlarmPlayer::BellOnly {
-                next_pulse_at,
-                detached,
-                notified,
-            } => {
-                if *detached && !*notified {
-                    send_background_alarm_notification();
-                    *notified = true;
-                }
+            AlarmPlayer::BellOnly { next_pulse_at } => {
                 let now = Instant::now();
                 if now >= *next_pulse_at {
                     bell_pulse();
@@ -365,51 +366,116 @@ fn bell_pulse() {
     let _ = io::stderr().flush();
 }
 
-fn send_background_alarm_notification() {
-    if let Err(err) = notify_background_alarm() {
-        eprintln!("tix: background fallback notification failed ({err})");
+fn send_background_alarm_notification(
+    alarm_id: Option<&str>,
+    notifications: AlarmNotificationConfig,
+    control: &StopControl,
+) {
+    if !notifications.enabled {
+        return;
+    }
+
+    if let Err(err) = notify_background_alarm(alarm_id, notifications, control) {
+        eprintln!("tix: background notification failed ({err})");
     }
 }
 
 #[cfg(target_os = "macos")]
-fn notify_background_alarm() -> io::Result<()> {
-    let status = ProcessCommand::new("/usr/bin/osascript")
-        .arg("-e")
-        .arg("display notification \"alarm ringing\" with title \"tix\"")
-        .arg("-e")
-        .arg("beep")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
+fn notify_background_alarm(
+    alarm_id: Option<&str>,
+    notifications: AlarmNotificationConfig,
+    _control: &StopControl,
+) -> io::Result<()> {
+    let mut notification = Notification::new();
+    notification
+        .summary("tix alarm")
+        .body(&notification_body(alarm_id, false, false))
+        .timeout(notification_timeout(notifications.timeout_ms))
+        .show()
+        .map(|_| ())
+        .map_err(|err| io::Error::other(format!("desktop notification failed: {err}")))
+}
 
-    if status.success() {
-        Ok(())
+#[cfg(target_os = "linux")]
+fn notify_background_alarm(
+    alarm_id: Option<&str>,
+    notifications: AlarmNotificationConfig,
+    control: &StopControl,
+) -> io::Result<()> {
+    let mut notification = Notification::new();
+    notification
+        .summary("tix alarm")
+        .body(&notification_body(
+            alarm_id,
+            notifications.clickable,
+            notifications.show_stop_button,
+        ))
+        .timeout(notification_timeout(notifications.timeout_ms));
+
+    if notifications.timeout_ms == 0 {
+        notification.hint(Hint::Resident(true));
+    }
+    if notifications.clickable {
+        // "default" maps body-click activation on XDG notification servers.
+        notification.action("default", "Stop alarm");
+        if notifications.show_stop_button {
+            notification.action("stop", "Stop");
+        }
+    }
+
+    let handle = notification
+        .show()
+        .map_err(|err| io::Error::other(format!("desktop notification failed: {err}")))?;
+    if notifications.clickable {
+        spawn_notification_action_listener(handle, control);
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn notify_background_alarm(
+    _alarm_id: Option<&str>,
+    _notifications: AlarmNotificationConfig,
+    _control: &StopControl,
+) -> io::Result<()> {
+    Err(io::Error::other(
+        "background notifications are not supported on this platform",
+    ))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn notification_timeout(timeout_ms: u32) -> Timeout {
+    if timeout_ms == 0 {
+        Timeout::Never
     } else {
-        Err(io::Error::other("osascript exited with a non-zero status"))
+        Timeout::Milliseconds(timeout_ms)
+    }
+}
+
+fn notification_body(alarm_id: Option<&str>, clickable: bool, show_stop_button: bool) -> String {
+    match alarm_id {
+        Some(alarm_id) if clickable && show_stop_button => {
+            format!("alarm ringing. click or press stop or run tix stop {alarm_id}")
+        }
+        Some(alarm_id) if clickable => {
+            format!("alarm ringing. click to stop or run tix stop {alarm_id}")
+        }
+        Some(alarm_id) => format!("alarm ringing. run tix stop {alarm_id}"),
+        None => "alarm ringing".to_string(),
     }
 }
 
 #[cfg(target_os = "linux")]
-fn notify_background_alarm() -> io::Result<()> {
-    let status = ProcessCommand::new("notify-send")
-        .arg("tix")
-        .arg("alarm ringing")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
+fn spawn_notification_action_listener(handle: NotificationHandle, control: &StopControl) {
+    let stop = control.stop.clone();
+    let wake_tx = control.wake_tx.clone();
 
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other("notify-send exited with a non-zero status"))
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn notify_background_alarm() -> io::Result<()> {
-    Err(io::Error::other(
-        "background notifications are not supported on this platform",
-    ))
+    thread::spawn(move || {
+        handle.wait_for_action(move |action| {
+            if matches!(action, "default" | "stop") {
+                stop.store(true, Ordering::Relaxed);
+                let _ = wake_tx.try_send(());
+            }
+        });
+    });
 }

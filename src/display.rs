@@ -39,7 +39,7 @@ impl ForegroundRenderer {
             target_local,
             target_utc: target_local.with_timezone(&Utc),
             spec_text: spec_text.to_string(),
-            title_line: String::from("tix | foreground"),
+            title_line: String::from("TIX | Foreground Alarm"),
             input_line: String::with_capacity(spec_text.len() + 7),
             current_line: String::with_capacity(48),
             target_line: String::with_capacity(48),
@@ -70,28 +70,28 @@ impl ForegroundRenderer {
 
         if self.settings.show_input {
             self.input_line.clear();
-            self.input_line.push_str("input: ");
+            self.input_line.push_str("Input: ");
             self.input_line.push_str(&self.spec_text);
             lines[line_count] = &self.input_line;
             line_count += 1;
         }
         if self.settings.show_current_datetime {
             self.current_line.clear();
-            self.current_line.push_str("current: ");
+            self.current_line.push_str("Now: ");
             write_alarm_time(now_local, self.time_notation, &mut self.current_line);
             lines[line_count] = &self.current_line;
             line_count += 1;
         }
         if self.settings.show_target_datetime {
             self.target_line.clear();
-            self.target_line.push_str("target: ");
+            self.target_line.push_str("Target: ");
             write_alarm_time(self.target_local, self.time_notation, &mut self.target_line);
             lines[line_count] = &self.target_line;
             line_count += 1;
         }
         if self.settings.show_remaining {
             self.remaining_line.clear();
-            self.remaining_line.push_str("remaining: ");
+            self.remaining_line.push_str("Remaining: ");
             format_remaining_into(
                 remaining,
                 self.settings.timer_style,
@@ -123,6 +123,8 @@ impl ForegroundRenderer {
     }
 
     fn redraw(&self, lines: &[&str]) -> io::Result<usize> {
+        const MIN_WIDTH: usize = 36;
+
         let mut stdout = io::stdout().lock();
         if self.rendered_lines > 0 {
             write!(stdout, "\r")?;
@@ -132,14 +134,29 @@ impl ForegroundRenderer {
             write!(stdout, "\x1b[J")?;
         }
 
-        for (index, line) in lines.iter().enumerate() {
-            if index > 0 {
-                writeln!(stdout)?;
-            }
-            write!(stdout, "{line}")?;
+        let width = lines
+            .iter()
+            .map(|line| line.len())
+            .max()
+            .unwrap_or(0)
+            .max(MIN_WIDTH);
+        write!(stdout, "+")?;
+        for _ in 0..(width + 2) {
+            write!(stdout, "-")?;
         }
+        writeln!(stdout, "+")?;
+
+        for line in lines {
+            writeln!(stdout, "| {line:<width$} |")?;
+        }
+
+        write!(stdout, "+")?;
+        for _ in 0..(width + 2) {
+            write!(stdout, "-")?;
+        }
+        write!(stdout, "+")?;
         stdout.flush()?;
-        Ok(lines.len())
+        Ok(lines.len() + 2)
     }
 }
 

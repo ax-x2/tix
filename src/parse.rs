@@ -1,7 +1,9 @@
-use chrono::{DateTime, NaiveDateTime, NaiveTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
-use crate::config::parse_volume;
-use crate::types::{AlarmSpec, AppResult, Command, DateOrder, RunMode};
+use crate::config::{parse_bool, parse_notification_timeout_ms, parse_volume};
+use crate::types::{
+    AlarmNotificationConfig, AlarmSpec, AppResult, Command, DateOrder, DateParseConfig, RunMode,
+};
 
 pub const HELP: &str = "\
 tix - clock alarm timer
@@ -25,6 +27,7 @@ Examples:
   tix -b 10m
   tix 13:30
   tix 01:30pm
+  tix 12/31/2026 8:15pm
   tix 12.03.2026 13:30
   tix status
   tix stop 17fd2a
@@ -35,7 +38,8 @@ Examples:
 
 Notes:
   - CLI mode flags override the configured default mode.
-  - slash dates use the configured date_order from ~/.config/tix/config.toml.
+  - slash dates accept unambiguous inputs in any common order.
+  - ambiguous slash dates follow the locale-aware config policy.
   - time-only alarms schedule today if still in the future, otherwise tomorrow.
   - multiple background alarms can be active at the same time.
 ";
@@ -99,7 +103,7 @@ where
     })
 }
 
-pub fn parse_alarm_spec(input: &str, date_order: DateOrder) -> AppResult<AlarmSpec> {
+pub fn parse_alarm_spec(input: &str, date_config: DateParseConfig) -> AppResult<AlarmSpec> {
     let normalized = normalize_spec_text(input);
     if normalized.is_empty() {
         return Err("empty alarm input".to_string());
@@ -121,13 +125,13 @@ pub fn parse_alarm_spec(input: &str, date_order: DateOrder) -> AppResult<AlarmSp
         return Ok(AlarmSpec::TimeOfDay(time));
     }
 
-    if let Some(datetime) = parse_local_datetime(&normalized, date_order) {
+    if let Some(datetime) = parse_local_datetime(&normalized, date_config)? {
         return Ok(AlarmSpec::Absolute(datetime));
     }
 
     Err(format!(
         "unsupported time format `{normalized}`\n\
-supported examples: `10m`, `1h30m`, `13:30`, `01:30pm`, `12.03.2026 13:30`, `2026-03-12 13:30`"
+supported examples: `10m`, `1h30m`, `13:30`, `01:30pm`, `12/31/2026 8:15pm`, `12.03.2026 13:30`, `2026-03-12 13:30`"
     ))
 }
 
@@ -276,6 +280,10 @@ where
     let mut auto_stop_seconds = 0_u64;
     let mut volume = None;
     let mut sound_file = None;
+    let mut notifications_enabled = true;
+    let mut notifications_clickable = true;
+    let mut notifications_timeout_ms = 0_u32;
+    let mut notifications_show_stop_button = true;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -314,6 +322,37 @@ where
                 };
                 sound_file = Some(value);
             }
+            "--notifications-enabled" => {
+                let Some(value) = args.next() else {
+                    return Err(
+                        "__worker requires --notifications-enabled <true|false>".to_string()
+                    );
+                };
+                notifications_enabled = parse_bool(&value)?;
+            }
+            "--notifications-clickable" => {
+                let Some(value) = args.next() else {
+                    return Err(
+                        "__worker requires --notifications-clickable <true|false>".to_string()
+                    );
+                };
+                notifications_clickable = parse_bool(&value)?;
+            }
+            "--notifications-timeout-ms" => {
+                let Some(value) = args.next() else {
+                    return Err("__worker requires --notifications-timeout-ms <u32>".to_string());
+                };
+                notifications_timeout_ms = parse_notification_timeout_ms(&value)?;
+            }
+            "--notifications-show-stop-button" => {
+                let Some(value) = args.next() else {
+                    return Err(
+                        "__worker requires --notifications-show-stop-button <true|false>"
+                            .to_string(),
+                    );
+                };
+                notifications_show_stop_button = parse_bool(&value)?;
+            }
             _ => return Err(format!("unknown internal worker argument `{arg}`")),
         }
     }
@@ -325,6 +364,12 @@ where
         auto_stop_seconds,
         volume: volume.ok_or_else(|| "__worker requires --volume <0.0..=1.0>".to_string())?,
         sound_file,
+        notifications: AlarmNotificationConfig {
+            enabled: notifications_enabled,
+            clickable: notifications_clickable,
+            timeout_ms: notifications_timeout_ms,
+            show_stop_button: notifications_show_stop_button,
+        },
     })
 }
 
@@ -352,64 +397,155 @@ fn parse_time_only(input: &str) -> Option<NaiveTime> {
     parse_first_time(input, FORMATS)
 }
 
-fn parse_local_datetime(input: &str, date_order: DateOrder) -> Option<NaiveDateTime> {
-    const ISO_FORMATS: &[&str] = &[
-        "%Y-%m-%d %H:%M",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d %I:%M%p",
-        "%Y-%m-%d %I:%M %p",
-        "%Y-%m-%d %I:%M:%S%p",
-        "%Y-%m-%d %I:%M:%S %p",
-        "%Y-%m-%dT%H:%M",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%dT%I:%M%p",
-        "%Y-%m-%dT%I:%M %p",
-        "%Y-%m-%dT%I:%M:%S%p",
-        "%Y-%m-%dT%I:%M:%S %p",
-    ];
-    const DOT_DMY_FORMATS: &[&str] = &[
-        "%d.%m.%Y %H:%M",
-        "%d.%m.%Y %H:%M:%S",
-        "%d.%m.%Y %I:%M%p",
-        "%d.%m.%Y %I:%M %p",
-        "%d.%m.%Y %I:%M:%S%p",
-        "%d.%m.%Y %I:%M:%S %p",
-    ];
-    const SLASH_DMY_FORMATS: &[&str] = &[
-        "%d/%m/%Y %H:%M",
-        "%d/%m/%Y %H:%M:%S",
-        "%d/%m/%Y %I:%M%p",
-        "%d/%m/%Y %I:%M %p",
-        "%d/%m/%Y %I:%M:%S%p",
-        "%d/%m/%Y %I:%M:%S %p",
-    ];
-    const SLASH_MDY_FORMATS: &[&str] = &[
-        "%m/%d/%Y %H:%M",
-        "%m/%d/%Y %H:%M:%S",
-        "%m/%d/%Y %I:%M%p",
-        "%m/%d/%Y %I:%M %p",
-        "%m/%d/%Y %I:%M:%S%p",
-        "%m/%d/%Y %I:%M:%S %p",
-    ];
-    const SLASH_YMD_FORMATS: &[&str] = &[
-        "%Y/%m/%d %H:%M",
-        "%Y/%m/%d %H:%M:%S",
-        "%Y/%m/%d %I:%M%p",
-        "%Y/%m/%d %I:%M %p",
-        "%Y/%m/%d %I:%M:%S%p",
-        "%Y/%m/%d %I:%M:%S %p",
-    ];
+fn parse_local_datetime(
+    input: &str,
+    date_config: DateParseConfig,
+) -> AppResult<Option<NaiveDateTime>> {
+    let Some((date_input, time_input)) = split_absolute_datetime(input) else {
+        return Ok(None);
+    };
+    let Some(time) = parse_time_only(time_input) else {
+        return Ok(None);
+    };
 
-    parse_first_datetime(input, ISO_FORMATS)
-        .or_else(|| parse_first_datetime(input, DOT_DMY_FORMATS))
-        .or_else(|| {
-            let slash_formats = match date_order {
-                DateOrder::Dmy => SLASH_DMY_FORMATS,
-                DateOrder::Mdy => SLASH_MDY_FORMATS,
-                DateOrder::Ymd => SLASH_YMD_FORMATS,
-            };
-            parse_first_datetime(input, slash_formats)
-        })
+    let Some(date) = parse_numeric_date(date_input, date_config)? else {
+        return Ok(None);
+    };
+
+    Ok(Some(date.and_time(time)))
+}
+
+fn split_absolute_datetime(input: &str) -> Option<(&str, &str)> {
+    for separator in ['T', ' '] {
+        let Some((date, time)) = input.split_once(separator) else {
+            continue;
+        };
+        let date = date.trim();
+        let time = time.trim();
+        if !date.is_empty() && !time.is_empty() {
+            return Some((date, time));
+        }
+    }
+    None
+}
+
+fn parse_numeric_date(
+    date_input: &str,
+    date_config: DateParseConfig,
+) -> AppResult<Option<NaiveDate>> {
+    let Some((separator, parts)) = split_date_parts(date_input) else {
+        return Ok(None);
+    };
+
+    let candidates = date_candidates(parts, separator);
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    resolve_date_candidate(date_input, &candidates, date_config).map(Some)
+}
+
+fn split_date_parts(date_input: &str) -> Option<(char, [&str; 3])> {
+    let separator = ['/', '-', '.']
+        .into_iter()
+        .find(|candidate| date_input.contains(*candidate))?;
+    let mut parts = date_input.split(separator);
+    let first = parts.next()?.trim();
+    let second = parts.next()?.trim();
+    let third = parts.next()?.trim();
+    if parts.next().is_some() {
+        return None;
+    }
+    if !all_ascii_digits([first, second, third]) {
+        return None;
+    }
+    Some((separator, [first, second, third]))
+}
+
+fn all_ascii_digits(parts: [&str; 3]) -> bool {
+    parts
+        .iter()
+        .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn date_candidates(parts: [&str; 3], separator: char) -> Vec<DateCandidate> {
+    let [first, second, third] = parts;
+    let mut candidates = Vec::with_capacity(2);
+
+    if first.len() == 4 {
+        push_date_candidate(&mut candidates, DateOrder::Ymd, first, second, third);
+        return candidates;
+    }
+
+    if third.len() != 4 {
+        return candidates;
+    }
+
+    push_date_candidate(&mut candidates, DateOrder::Dmy, third, second, first);
+    if separator != '.' {
+        push_date_candidate(&mut candidates, DateOrder::Mdy, third, first, second);
+    }
+    candidates
+}
+
+fn push_date_candidate(
+    candidates: &mut Vec<DateCandidate>,
+    order: DateOrder,
+    year: &str,
+    month: &str,
+    day: &str,
+) {
+    let Ok(year) = year.parse::<i32>() else {
+        return;
+    };
+    let Ok(month) = month.parse::<u32>() else {
+        return;
+    };
+    let Ok(day) = day.parse::<u32>() else {
+        return;
+    };
+    let Some(date) = NaiveDate::from_ymd_opt(year, month, day) else {
+        return;
+    };
+    if candidates.iter().any(|candidate| candidate.date == date) {
+        return;
+    }
+    candidates.push(DateCandidate { order, date });
+}
+
+fn resolve_date_candidate(
+    raw_date: &str,
+    candidates: &[DateCandidate],
+    date_config: DateParseConfig,
+) -> AppResult<NaiveDate> {
+    if let [candidate] = candidates {
+        return Ok(candidate.date);
+    }
+
+    if date_config.prefer_locale_order
+        && let Some(locale_order) = date_config.locale_order
+        && let Some(candidate) = candidates
+            .iter()
+            .find(|candidate| candidate.order == locale_order)
+    {
+        return Ok(candidate.date);
+    }
+
+    if let Some(candidate) = candidates
+        .iter()
+        .find(|candidate| candidate.order == date_config.fallback_order)
+    {
+        return Ok(candidate.date);
+    }
+
+    let supported_orders = candidates
+        .iter()
+        .map(|candidate| candidate.order.to_string())
+        .collect::<Vec<_>>()
+        .join("/");
+    Err(format!(
+        "ambiguous date `{raw_date}`; valid interpretations match {supported_orders}. disable prefer_locale_date_order, adjust date_order, or use `YYYY-MM-DD`"
+    ))
 }
 
 fn parse_first_time(input: &str, formats: &[&str]) -> Option<NaiveTime> {
@@ -418,10 +554,10 @@ fn parse_first_time(input: &str, formats: &[&str]) -> Option<NaiveTime> {
         .find_map(|format| NaiveTime::parse_from_str(input, format).ok())
 }
 
-fn parse_first_datetime(input: &str, formats: &[&str]) -> Option<NaiveDateTime> {
-    formats
-        .iter()
-        .find_map(|format| NaiveDateTime::parse_from_str(input, format).ok())
+#[derive(Clone, Copy, Debug)]
+struct DateCandidate {
+    order: DateOrder,
+    date: NaiveDate,
 }
 
 #[cfg(test)]
@@ -429,15 +565,23 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    fn parse_config(order: DateOrder) -> DateParseConfig {
+        DateParseConfig {
+            fallback_order: order,
+            prefer_locale_order: false,
+            locale_order: None,
+        }
+    }
+
     #[test]
     fn parses_relative_duration() {
-        let spec = parse_alarm_spec("10m", DateOrder::Dmy).unwrap();
+        let spec = parse_alarm_spec("10m", parse_config(DateOrder::Dmy)).unwrap();
         assert!(matches!(spec, AlarmSpec::Duration(value) if value == Duration::from_secs(600)));
     }
 
     #[test]
     fn parses_time_only_24h() {
-        let spec = parse_alarm_spec("13:30", DateOrder::Dmy).unwrap();
+        let spec = parse_alarm_spec("13:30", parse_config(DateOrder::Dmy)).unwrap();
         assert!(
             matches!(spec, AlarmSpec::TimeOfDay(value) if value == NaiveTime::from_hms_opt(13, 30, 0).unwrap())
         );
@@ -445,7 +589,7 @@ mod tests {
 
     #[test]
     fn parses_time_only_12h() {
-        let spec = parse_alarm_spec("01:30pm", DateOrder::Dmy).unwrap();
+        let spec = parse_alarm_spec("01:30pm", parse_config(DateOrder::Dmy)).unwrap();
         assert!(
             matches!(spec, AlarmSpec::TimeOfDay(value) if value == NaiveTime::from_hms_opt(13, 30, 0).unwrap())
         );
@@ -453,7 +597,7 @@ mod tests {
 
     #[test]
     fn parses_dotted_local_datetime() {
-        let spec = parse_alarm_spec("12.03.2026 13:30", DateOrder::Dmy).unwrap();
+        let spec = parse_alarm_spec("12.03.2026 13:30", parse_config(DateOrder::Dmy)).unwrap();
         assert!(
             matches!(spec, AlarmSpec::Absolute(value) if value == NaiveDateTime::parse_from_str("2026-03-12 13:30:00", "%Y-%m-%d %H:%M:%S").unwrap())
         );
@@ -461,15 +605,53 @@ mod tests {
 
     #[test]
     fn parses_slash_dates_by_configured_order() {
-        let dmy = parse_alarm_spec("03/12/2026 13:30", DateOrder::Dmy).unwrap();
+        let dmy = parse_alarm_spec("03/12/2026 13:30", parse_config(DateOrder::Dmy)).unwrap();
         assert!(
             matches!(dmy, AlarmSpec::Absolute(value) if value == NaiveDateTime::parse_from_str("2026-12-03 13:30:00", "%Y-%m-%d %H:%M:%S").unwrap())
         );
 
-        let mdy = parse_alarm_spec("03/12/2026 13:30", DateOrder::Mdy).unwrap();
+        let mdy = parse_alarm_spec("03/12/2026 13:30", parse_config(DateOrder::Mdy)).unwrap();
         assert!(
             matches!(mdy, AlarmSpec::Absolute(value) if value == NaiveDateTime::parse_from_str("2026-03-12 13:30:00", "%Y-%m-%d %H:%M:%S").unwrap())
         );
+    }
+
+    #[test]
+    fn parses_unambiguous_month_day_year_even_with_dmy_fallback() {
+        let spec = parse_alarm_spec("12/31/2026 8:15pm", parse_config(DateOrder::Dmy)).unwrap();
+        assert!(
+            matches!(spec, AlarmSpec::Absolute(value) if value == NaiveDateTime::parse_from_str("2026-12-31 20:15:00", "%Y-%m-%d %H:%M:%S").unwrap())
+        );
+    }
+
+    #[test]
+    fn parses_hyphenated_month_day_year_when_unambiguous() {
+        let spec = parse_alarm_spec("12-31-2026 20:15", parse_config(DateOrder::Dmy)).unwrap();
+        assert!(
+            matches!(spec, AlarmSpec::Absolute(value) if value == NaiveDateTime::parse_from_str("2026-12-31 20:15:00", "%Y-%m-%d %H:%M:%S").unwrap())
+        );
+    }
+
+    #[test]
+    fn locale_order_can_override_fallback_for_ambiguous_slash_dates() {
+        let spec = parse_alarm_spec(
+            "03/04/2026 13:30",
+            DateParseConfig {
+                fallback_order: DateOrder::Dmy,
+                prefer_locale_order: true,
+                locale_order: Some(DateOrder::Mdy),
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(spec, AlarmSpec::Absolute(value) if value == NaiveDateTime::parse_from_str("2026-03-04 13:30:00", "%Y-%m-%d %H:%M:%S").unwrap())
+        );
+    }
+
+    #[test]
+    fn ymd_fallback_rejects_ambiguous_year_last_slash_dates() {
+        let result = parse_alarm_spec("03/04/2026 13:30", parse_config(DateOrder::Ymd));
+        assert!(result.is_err());
     }
 
     #[test]
@@ -558,6 +740,14 @@ mod tests {
             "0.40".to_string(),
             "--sound-file".to_string(),
             "/tmp/alarm.mp3".to_string(),
+            "--notifications-enabled".to_string(),
+            "true".to_string(),
+            "--notifications-clickable".to_string(),
+            "true".to_string(),
+            "--notifications-timeout-ms".to_string(),
+            "0".to_string(),
+            "--notifications-show-stop-button".to_string(),
+            "true".to_string(),
         ])
         .unwrap();
 
@@ -565,9 +755,14 @@ mod tests {
             command,
             Command::Worker {
                 volume,
+                notifications,
                 sound_file: Some(_),
                 ..
             } if (volume - 0.40).abs() < f32::EPSILON
+                && notifications.enabled
+                && notifications.clickable
+                && notifications.timeout_ms == 0
+                && notifications.show_stop_button
         ));
     }
 
@@ -585,5 +780,13 @@ mod tests {
                 volume_override: None
             }
         ));
+    }
+
+    #[test]
+    fn parses_year_first_slash_datetime() {
+        let spec = parse_alarm_spec("2026/03/12 13:30", parse_config(DateOrder::Dmy)).unwrap();
+        assert!(
+            matches!(spec, AlarmSpec::Absolute(value) if value == NaiveDateTime::parse_from_str("2026-03-12 13:30:00", "%Y-%m-%d %H:%M:%S").unwrap())
+        );
     }
 }

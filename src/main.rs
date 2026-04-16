@@ -7,7 +7,7 @@ mod state;
 mod types;
 
 use std::env;
-use std::fmt::Display;
+use std::fmt::{Display, Write as FmtWrite};
 use std::time::Duration;
 
 use alarm::{run_alarm_session, run_background_worker, test_alarm_audio};
@@ -16,7 +16,7 @@ use config::{
     parse_volume, render_config, save_config, validate_timezone,
 };
 use display::ForegroundRenderer;
-use parse::{parse_alarm_spec, parse_command, HELP};
+use parse::{HELP, parse_alarm_spec, parse_command};
 use schedule::{format_alarm_time, resolve_alarm_with_now};
 use state::{
     active_alarm_states, parse_state_target_utc, remove_alarm_state_by_id, resolve_alarm_selector,
@@ -46,8 +46,8 @@ fn run() -> AppResult<()> {
         Command::ConfigInit => {
             let path = config_file_path()?;
             let config = load_or_create_config()?;
-            print_section("config initialized");
-            print_detail("path", path.display());
+            print_section("Config Initialized");
+            print_detail("Path", path.display());
             println!();
             print!("{}", render_config(&config)?);
             Ok(())
@@ -55,8 +55,8 @@ fn run() -> AppResult<()> {
         Command::ConfigShow => {
             let path = config_file_path()?;
             let config = load_or_create_config()?;
-            print_section("config");
-            print_detail("path", path.display());
+            print_section("Config");
+            print_detail("Path", path.display());
             println!();
             print!("{}", render_config(&config)?);
             Ok(())
@@ -66,10 +66,10 @@ fn run() -> AppResult<()> {
             let mut config = load_or_create_config()?;
             apply_config_update(&mut config, &key, &value)?;
             save_config(&path, &config)?;
-            print_section("config Updated");
-            print_detail("path", path.display());
-            print_detail("key", &key);
-            print_detail("value", &value);
+            print_section("Config Updated");
+            print_detail("Path", path.display());
+            print_detail("Key", &key);
+            print_detail("Value", &value);
             println!();
             print!("{}", render_config(&config)?);
             Ok(())
@@ -96,11 +96,13 @@ fn run() -> AppResult<()> {
             auto_stop_seconds,
             volume,
             sound_file,
+            notifications,
         } => run_background_worker(
             alarm_id,
             target_utc,
             auto_stop_seconds,
             AlarmAudioConfig { volume, sound_file },
+            notifications,
         ),
     }
 }
@@ -112,7 +114,7 @@ fn run_alarm_command(
     mode_override: Option<RunMode>,
 ) -> AppResult<()> {
     let timezone = config.parsed_timezone()?;
-    let spec = parse_alarm_spec(spec_text, config.date_order)?;
+    let spec = parse_alarm_spec(spec_text, config.date_parse_config())?;
     let now = chrono::Utc::now().with_timezone(&timezone);
     let target = resolve_alarm_with_now(spec, timezone, now)?;
     let target_utc = target.with_timezone(&chrono::Utc);
@@ -126,24 +128,24 @@ fn run_alarm_command(
     let effective_mode = RunMode::resolve(mode_override, config.default_mode);
 
     print_section(if dry_run {
-        "alarm preview"
+        "Alarm Preview"
     } else {
-        "alarm ready"
+        "Alarm Ready"
     });
-    print_detail("input", spec_text);
-    print_detail("target", format_alarm_time(target, config.time_notation));
-    print_detail("remaining", format_pretty_duration(remaining));
-    print_detail("mode", mode_label(effective_mode));
+    print_detail("Input", spec_text);
+    print_detail("Target", format_alarm_time(target, config.time_notation));
+    print_detail("Remaining", format_pretty_duration(remaining));
+    print_detail("Mode", mode_label(effective_mode));
 
     if dry_run {
         println!();
-        println!("dry run only. no alarm started.");
+        println!("Preview only. No alarm started.");
         return Ok(());
     }
 
     if effective_mode == RunMode::Foreground {
         println!();
-        println!("foreground mode. press Ctrl-C to cancel or stop the ringing alarm.");
+        println!("Foreground mode. Press Ctrl-C to cancel or stop the ringing alarm.");
         let mut renderer = ForegroundRenderer::new(
             config.foreground,
             timezone,
@@ -157,21 +159,29 @@ fn run_alarm_command(
             None
         };
         return run_alarm_session(
+            None,
             target_utc,
             config.auto_stop_seconds,
             &audio,
             renderer_opt,
             true,
             false,
+            config.notifications.clone().into(),
         );
     }
 
-    let state = schedule_background_alarm(spec_text, target_utc, config.auto_stop_seconds, &audio)?;
+    let state = schedule_background_alarm(
+        spec_text,
+        target_utc,
+        config.auto_stop_seconds,
+        &audio,
+        config.notifications.clone().into(),
+    )?;
     println!();
-    print_section("background worker");
-    print_detail("id", &state.id);
-    print_detail("pid", state.pid);
-    print_detail("stop", format!("tix stop {}", state.id));
+    print_section("Background Worker");
+    print_detail("ID", &state.id);
+    print_detail("PID", state.pid);
+    print_detail("Stop", format!("tix stop {}", state.id));
     Ok(())
 }
 
@@ -187,8 +197,8 @@ fn set_volume(volume: f64) -> AppResult<()> {
     config.volume = volume;
     config.validate()?;
     save_config(&path, &config)?;
-    print_section("volume updated");
-    print_detail("value", format!("{:.2}", config.volume));
+    print_section("Volume Updated");
+    print_detail("Value", format!("{:.2}", config.volume));
     Ok(())
 }
 
@@ -198,10 +208,10 @@ fn test_volume(volume_override: Option<f64>) -> AppResult<()> {
         config.volume = parse_volume(&volume.to_string())?;
     }
 
-    print_section("volume test");
-    print_detail("volume", format!("{:.2}", config.volume));
+    print_section("Volume Test");
+    print_detail("Volume", format!("{:.2}", config.volume));
     print_detail(
-        "sound",
+        "Sound",
         config
             .sound_file
             .as_deref()
@@ -218,7 +228,7 @@ fn test_volume(volume_override: Option<f64>) -> AppResult<()> {
 fn show_alarm_status() -> AppResult<()> {
     let states = active_alarm_states()?;
     if states.is_empty() {
-        println!("no active alarms.");
+        println!("No active alarms.");
         return Ok(());
     }
 
@@ -226,8 +236,8 @@ fn show_alarm_status() -> AppResult<()> {
     let timezone = config.parsed_timezone()?;
     let now_utc = chrono::Utc::now();
 
-    print_section("active Alarms");
-    print_detail("count", states.len());
+    print_section("Active Alarms");
+    print_detail("Count", states.len());
     for (index, state) in states.iter().enumerate() {
         let target_utc = parse_state_target_utc(state)?;
         let target_local = target_utc.with_timezone(&timezone);
@@ -235,14 +245,14 @@ fn show_alarm_status() -> AppResult<()> {
 
         println!();
         print_subsection(&format!("[{}] {}", index + 1, state.id));
-        print_detail("pid", state.pid);
-        print_detail("input", &state.spec_text);
+        print_detail("PID", state.pid);
+        print_detail("Input", &state.spec_text);
         print_detail(
-            "target",
+            "Target",
             format_alarm_time(target_local, config.time_notation),
         );
-        print_detail("remaining", format_pretty_duration(remaining));
-        print_detail("created", &state.created_at_utc);
+        print_detail("Remaining", format_pretty_duration(remaining));
+        print_detail("Created", &state.created_at_utc);
     }
     Ok(())
 }
@@ -250,7 +260,7 @@ fn show_alarm_status() -> AppResult<()> {
 fn stop_active_alarms(selector: Option<String>, all: bool) -> AppResult<()> {
     let states = active_alarm_states()?;
     if states.is_empty() {
-        println!("no active alarms.");
+        println!("No active alarms.");
         return Ok(());
     }
 
@@ -259,8 +269,8 @@ fn stop_active_alarms(selector: Option<String>, all: bool) -> AppResult<()> {
             terminate_process(state.pid)?;
             remove_alarm_state_by_id(&state.id)?;
         }
-        print_section("alarms stopped");
-        print_detail("count", states.len());
+        print_section("Alarms Stopped");
+        print_detail("Count", states.len());
         return Ok(());
     }
 
@@ -281,24 +291,25 @@ fn stop_active_alarms(selector: Option<String>, all: bool) -> AppResult<()> {
 
     terminate_process(state.pid)?;
     remove_alarm_state_by_id(&state.id)?;
-    print_section("alarm Stopped");
-    print_detail("id", &state.id);
-    print_detail("pid", state.pid);
+    print_section("Alarm Stopped");
+    print_detail("ID", &state.id);
+    print_detail("PID", state.pid);
     Ok(())
 }
 
 fn print_section(title: &str) {
-    println!("{title}");
-    println!("{}", "=".repeat(title.len()));
+    const WIDTH: usize = 56;
+    let prefix = format!("== {title} ");
+    let fill = "-".repeat(WIDTH.saturating_sub(prefix.len()).max(4));
+    println!("{prefix}{fill}");
 }
 
 fn print_subsection(title: &str) {
-    println!("{title}");
-    println!("{}", "-".repeat(title.len()));
+    println!("-- {title}");
 }
 
 fn print_detail(label: &str, value: impl Display) {
-    println!("{label:>10}: {value}");
+    println!("  {:<12} {value}", format!("{label}:"));
 }
 
 fn mode_label(mode: RunMode) -> &'static str {
@@ -315,6 +326,34 @@ fn format_pretty_duration(duration: Duration) -> String {
     if rounded_secs == 0 && duration > Duration::ZERO {
         return "less than 1s".to_string();
     }
+    if rounded_secs == 0 {
+        return "0s".to_string();
+    }
 
-    humantime::format_duration(Duration::from_secs(rounded_secs)).to_string()
+    let days = rounded_secs / 86_400;
+    let hours = (rounded_secs % 86_400) / 3_600;
+    let minutes = (rounded_secs % 3_600) / 60;
+    let seconds = rounded_secs % 60;
+    let mut rendered = String::with_capacity(32);
+
+    if days > 0 {
+        let _ = write!(rendered, "{days}d");
+    }
+    if hours > 0 || !rendered.is_empty() {
+        if !rendered.is_empty() {
+            rendered.push(' ');
+        }
+        let _ = write!(rendered, "{hours}h");
+    }
+    if minutes > 0 || !rendered.is_empty() {
+        if !rendered.is_empty() {
+            rendered.push(' ');
+        }
+        let _ = write!(rendered, "{minutes}m");
+    }
+    if !rendered.is_empty() {
+        rendered.push(' ');
+    }
+    let _ = write!(rendered, "{seconds}s");
+    rendered
 }

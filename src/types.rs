@@ -12,11 +12,13 @@ pub type AppResult<T> = Result<T, String>;
 pub struct Config {
     pub timezone: String,
     pub date_order: DateOrder,
+    pub prefer_locale_date_order: bool,
     pub time_notation: TimeNotation,
     pub default_mode: RunMode,
     pub auto_stop_seconds: u64,
     pub volume: f64,
     pub sound_file: Option<String>,
+    pub notifications: NotificationConfig,
     pub foreground: ForegroundConfig,
 }
 
@@ -182,6 +184,52 @@ pub struct AlarmAudioConfig {
     pub sound_file: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationConfig {
+    pub enabled: bool,
+    pub clickable: bool,
+    pub timeout_ms: u32,
+    pub show_stop_button: bool,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            clickable: true,
+            timeout_ms: 0,
+            show_stop_button: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct AlarmNotificationConfig {
+    pub enabled: bool,
+    pub clickable: bool,
+    pub timeout_ms: u32,
+    pub show_stop_button: bool,
+}
+
+impl From<NotificationConfig> for AlarmNotificationConfig {
+    fn from(value: NotificationConfig) -> Self {
+        Self {
+            enabled: value.enabled,
+            clickable: value.clickable,
+            timeout_ms: value.timeout_ms,
+            show_stop_button: value.show_stop_button,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DateParseConfig {
+    pub fallback_order: DateOrder,
+    pub prefer_locale_order: bool,
+    pub locale_order: Option<DateOrder>,
+}
+
 #[derive(Debug)]
 pub enum Command {
     Alarm {
@@ -196,6 +244,7 @@ pub enum Command {
         auto_stop_seconds: u64,
         volume: f32,
         sound_file: Option<String>,
+        notifications: AlarmNotificationConfig,
     },
     Status,
     Stop {
@@ -241,5 +290,6 @@ pub struct ActiveAlarmState {
 
 pub struct StopControl {
     pub stop: Arc<AtomicBool>,
+    pub wake_tx: mpsc::SyncSender<()>,
     pub wake_rx: mpsc::Receiver<()>,
 }

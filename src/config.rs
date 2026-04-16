@@ -4,7 +4,10 @@ use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-use crate::types::{AppResult, Config, DateOrder, ForegroundConfig, RunMode, TimeNotation};
+use crate::types::{
+    AppResult, Config, DateOrder, DateParseConfig, ForegroundConfig, NotificationConfig, RunMode,
+    TimeNotation,
+};
 
 pub fn config_root() -> AppResult<PathBuf> {
     let Some(home) = env::var_os("HOME") else {
@@ -75,6 +78,9 @@ pub fn apply_config_update(config: &mut Config, key: &str, value: &str) -> AppRe
         "date_order" | "date-order" => {
             config.date_order = value.parse()?;
         }
+        "prefer_locale_date_order" | "prefer-locale-date-order" => {
+            config.prefer_locale_date_order = parse_bool(value)?;
+        }
         "time_notation" | "time-notation" => {
             config.time_notation = value.parse()?;
         }
@@ -91,6 +97,18 @@ pub fn apply_config_update(config: &mut Config, key: &str, value: &str) -> AppRe
         }
         "sound_file" | "sound-file" => {
             config.sound_file = parse_sound_file_value(value)?;
+        }
+        "notifications.enabled" | "notifications-enabled" => {
+            config.notifications.enabled = parse_bool(value)?;
+        }
+        "notifications.clickable" | "notifications-clickable" => {
+            config.notifications.clickable = parse_bool(value)?;
+        }
+        "notifications.timeout_ms" | "notifications-timeout-ms" => {
+            config.notifications.timeout_ms = parse_notification_timeout_ms(value)?;
+        }
+        "notifications.show_stop_button" | "notifications-show-stop-button" => {
+            config.notifications.show_stop_button = parse_bool(value)?;
         }
         "foreground.refresh_interval_ms" | "foreground.refresh-interval-ms" => {
             config.foreground.refresh_interval_ms = value.parse().map_err(|_| {
@@ -114,7 +132,7 @@ pub fn apply_config_update(config: &mut Config, key: &str, value: &str) -> AppRe
         }
         _ => {
             return Err(
-                "supported config keys: timezone, date_order, time_notation, default_mode, auto_stop_seconds, volume, sound_file, foreground.refresh_interval_ms, foreground.show_current_datetime, foreground.show_target_datetime, foreground.show_remaining, foreground.show_input, foreground.timer_style"
+                "supported config keys: timezone, date_order, prefer_locale_date_order, time_notation, default_mode, auto_stop_seconds, volume, sound_file, notifications.enabled, notifications.clickable, notifications.timeout_ms, notifications.show_stop_button, foreground.refresh_interval_ms, foreground.show_current_datetime, foreground.show_target_datetime, foreground.show_remaining, foreground.show_input, foreground.timer_style"
                     .to_string(),
             );
         }
@@ -133,6 +151,7 @@ impl Config {
     pub fn validate(&self) -> AppResult<()> {
         self.parsed_timezone()?;
         validate_volume(self.volume)?;
+        self.notifications.validate()?;
         self.foreground.validate()?;
         Ok(())
     }
@@ -142,6 +161,14 @@ impl Config {
             .parse::<Tz>()
             .map_err(|_| format!("invalid timezone `{}` in config", self.timezone))
     }
+
+    pub fn date_parse_config(&self) -> DateParseConfig {
+        DateParseConfig {
+            fallback_order: self.date_order,
+            prefer_locale_order: self.prefer_locale_date_order,
+            locale_order: detect_system_date_order(),
+        }
+    }
 }
 
 impl Default for Config {
@@ -149,11 +176,13 @@ impl Default for Config {
         Self {
             timezone: detect_default_timezone(),
             date_order: DateOrder::Dmy,
+            prefer_locale_date_order: true,
             time_notation: TimeNotation::H24,
             default_mode: RunMode::Background,
             auto_stop_seconds: 0,
             volume: 0.20,
             sound_file: None,
+            notifications: NotificationConfig::default(),
             foreground: ForegroundConfig::default(),
         }
     }
@@ -163,6 +192,47 @@ fn detect_default_timezone() -> String {
     match iana_time_zone::get_timezone() {
         Ok(timezone) if timezone.parse::<Tz>().is_ok() => timezone,
         _ => "UTC".to_string(),
+    }
+}
+
+pub fn detect_system_date_order() -> Option<DateOrder> {
+    locale_region_from_env().map(date_order_from_region)
+}
+
+fn locale_region_from_env() -> Option<String> {
+    for key in ["LC_TIME", "LC_ALL", "LANG"] {
+        let Some(value) = env::var_os(key) else {
+            continue;
+        };
+        let raw = value.to_string_lossy();
+        if let Some(region) = extract_locale_region(&raw) {
+            return Some(region.to_string());
+        }
+    }
+    None
+}
+
+fn extract_locale_region(raw: &str) -> Option<&str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || matches!(trimmed, "C" | "POSIX") {
+        return None;
+    }
+
+    let locale = trimmed.split('.').next()?.split('@').next()?.trim();
+    let mut parts = locale.split(['_', '-']);
+    let _language = parts.next()?;
+    let region = parts.next()?.trim();
+    if region.is_empty() {
+        return None;
+    }
+    Some(region)
+}
+
+fn date_order_from_region(region: String) -> DateOrder {
+    match region.to_ascii_uppercase().as_str() {
+        "US" | "BZ" | "FM" | "PA" | "PH" | "PW" => DateOrder::Mdy,
+        "CN" | "HU" | "JP" | "KR" | "LT" | "MN" | "TW" => DateOrder::Ymd,
+        _ => DateOrder::Dmy,
     }
 }
 
@@ -177,19 +247,24 @@ fn bootstrap_config() -> AppResult<Config> {
 
     let timezone = prompt_timezone(&defaults.timezone)?;
     let date_order = prompt_date_order(defaults.date_order)?;
+    let prefer_locale_date_order =
+        prompt_prefer_locale_date_order(defaults.prefer_locale_date_order)?;
     let time_notation = prompt_time_notation(defaults.time_notation)?;
     let default_mode = prompt_default_mode(defaults.default_mode)?;
     let auto_stop_seconds = prompt_auto_stop(defaults.auto_stop_seconds)?;
     let volume = prompt_volume(defaults.volume)?;
+    let notifications = prompt_notifications(&defaults.notifications)?;
 
     Ok(Config {
         timezone,
         date_order,
+        prefer_locale_date_order,
         time_notation,
         default_mode,
         auto_stop_seconds,
         volume,
         sound_file: defaults.sound_file,
+        notifications,
         foreground: defaults.foreground,
     })
 }
@@ -210,6 +285,21 @@ fn prompt_date_order(default: DateOrder) -> AppResult<DateOrder> {
             return Ok(default);
         }
         match input.parse() {
+            Ok(value) => return Ok(value),
+            Err(err) => eprintln!("{err}"),
+        }
+    }
+}
+
+fn prompt_prefer_locale_date_order(default: bool) -> AppResult<bool> {
+    loop {
+        let input = prompt_line(&format!(
+            "prefer system locale for slash dates [{default}] (true/false): "
+        ))?;
+        if input.is_empty() {
+            return Ok(default);
+        }
+        match parse_bool(&input) {
             Ok(value) => return Ok(value),
             Err(err) => eprintln!("{err}"),
         }
@@ -270,6 +360,54 @@ fn prompt_volume(default: f64) -> AppResult<f64> {
     }
 }
 
+fn prompt_notifications(default: &NotificationConfig) -> AppResult<NotificationConfig> {
+    let enabled = prompt_bool("desktop notifications", default.enabled, "true/false")?;
+    let clickable = prompt_bool("notification actions", default.clickable, "true/false")?;
+    let show_stop_button = prompt_bool(
+        "notification stop button",
+        default.show_stop_button,
+        "true/false",
+    )?;
+    let timeout_ms = prompt_notification_timeout_ms(default.timeout_ms)?;
+
+    let notifications = NotificationConfig {
+        enabled,
+        clickable,
+        timeout_ms,
+        show_stop_button,
+    };
+    notifications.validate()?;
+    Ok(notifications)
+}
+
+fn prompt_bool(label: &str, default: bool, expected: &str) -> AppResult<bool> {
+    loop {
+        let input = prompt_line(&format!("{label} [{default}] ({expected}): "))?;
+        if input.is_empty() {
+            return Ok(default);
+        }
+        match parse_bool(&input) {
+            Ok(value) => return Ok(value),
+            Err(err) => eprintln!("{err}"),
+        }
+    }
+}
+
+fn prompt_notification_timeout_ms(default: u32) -> AppResult<u32> {
+    loop {
+        let input = prompt_line(&format!(
+            "notification timeout ms [{default}] (0 keeps it open): "
+        ))?;
+        if input.is_empty() {
+            return Ok(default);
+        }
+        match parse_notification_timeout_ms(&input) {
+            Ok(value) => return Ok(value),
+            Err(err) => eprintln!("{err}"),
+        }
+    }
+}
+
 fn prompt_line(prompt: &str) -> AppResult<String> {
     print!("{prompt}");
     io::stdout()
@@ -311,12 +449,31 @@ pub fn validate_volume(volume: f64) -> AppResult<()> {
     Ok(())
 }
 
+impl NotificationConfig {
+    pub fn validate(&self) -> AppResult<()> {
+        validate_notification_timeout_ms(self.timeout_ms)
+    }
+}
+
 pub fn parse_bool(value: &str) -> AppResult<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" | "on" => Ok(true),
         "false" | "0" | "no" | "off" => Ok(false),
         _ => Err("boolean value must be one of: true, false".to_string()),
     }
+}
+
+pub fn parse_notification_timeout_ms(value: &str) -> AppResult<u32> {
+    let timeout_ms = value
+        .parse::<u32>()
+        .map_err(|_| "notifications.timeout_ms must be an unsigned integer".to_string())?;
+    validate_notification_timeout_ms(timeout_ms)?;
+    Ok(timeout_ms)
+}
+
+pub fn validate_notification_timeout_ms(timeout_ms: u32) -> AppResult<()> {
+    let _ = timeout_ms;
+    Ok(())
 }
 
 fn parse_sound_file_value(value: &str) -> AppResult<Option<String>> {
@@ -366,8 +523,13 @@ auto_stop_seconds = 0
         .unwrap();
 
         assert_eq!(config.default_mode, RunMode::Background);
+        assert!(config.prefer_locale_date_order);
         assert!((config.volume - 0.20).abs() < f64::EPSILON);
         assert!(config.sound_file.is_none());
+        assert!(config.notifications.enabled);
+        assert!(config.notifications.clickable);
+        assert_eq!(config.notifications.timeout_ms, 0);
+        assert!(config.notifications.show_stop_button);
         assert!(config.foreground.show_remaining);
     }
 
@@ -383,6 +545,12 @@ auto_stop_seconds = 0
 volume = 0.3
 sound_file = "/home/x/Music/3.mp3"
 
+[notifications]
+enabled = true
+clickable = true
+timeout_ms = 0
+show_stop_button = true
+
 [foreground]
 refresh_interval_ms = 250
 show_current_datetime = true
@@ -396,22 +564,58 @@ timer_style = "digital"
 
         assert_eq!(config.timezone, "Europe/Berlin");
         assert_eq!(config.default_mode, RunMode::Background);
+        assert!(config.prefer_locale_date_order);
         assert!((config.volume - 0.3).abs() < f64::EPSILON);
         assert_eq!(config.sound_file.as_deref(), Some("/home/x/Music/3.mp3"));
+        assert!(config.notifications.enabled);
+        assert!(config.notifications.clickable);
+        assert_eq!(config.notifications.timeout_ms, 0);
+        assert!(config.notifications.show_stop_button);
         assert!(config.foreground.show_current_datetime);
     }
 
     #[test]
-    fn nested_foreground_keys_can_be_updated() {
+    fn nested_config_keys_can_be_updated() {
         let mut config = Config::default();
         apply_config_update(&mut config, "foreground.timer_style", "human").unwrap();
         apply_config_update(&mut config, "foreground.show_input", "false").unwrap();
         apply_config_update(&mut config, "default_mode", "foreground").unwrap();
+        apply_config_update(&mut config, "prefer_locale_date_order", "false").unwrap();
+        apply_config_update(&mut config, "notifications.enabled", "false").unwrap();
+        apply_config_update(&mut config, "notifications.clickable", "false").unwrap();
+        apply_config_update(&mut config, "notifications.timeout_ms", "15000").unwrap();
+        apply_config_update(&mut config, "notifications.show_stop_button", "false").unwrap();
         apply_config_update(&mut config, "volume", "0.35").unwrap();
 
         assert_eq!(config.foreground.timer_style.to_string(), "human");
         assert!(!config.foreground.show_input);
         assert_eq!(config.default_mode, RunMode::Foreground);
+        assert!(!config.prefer_locale_date_order);
+        assert!(!config.notifications.enabled);
+        assert!(!config.notifications.clickable);
+        assert_eq!(config.notifications.timeout_ms, 15_000);
+        assert!(!config.notifications.show_stop_button);
         assert!((config.volume - 0.35).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn large_notification_timeout_is_accepted() {
+        let result = parse_notification_timeout_ms("4294967295").unwrap();
+        assert_eq!(result, u32::MAX);
+    }
+
+    #[test]
+    fn locale_region_is_extracted_from_common_env_shapes() {
+        assert_eq!(extract_locale_region("en_US.UTF-8"), Some("US"));
+        assert_eq!(extract_locale_region("de-DE"), Some("DE"));
+        assert_eq!(extract_locale_region("ja_JP@calendar=japanese"), Some("JP"));
+        assert_eq!(extract_locale_region("C"), None);
+    }
+
+    #[test]
+    fn known_regions_map_to_expected_date_orders() {
+        assert_eq!(date_order_from_region("US".to_string()), DateOrder::Mdy);
+        assert_eq!(date_order_from_region("JP".to_string()), DateOrder::Ymd);
+        assert_eq!(date_order_from_region("DE".to_string()), DateOrder::Dmy);
     }
 }

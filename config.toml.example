@@ -9,6 +9,10 @@ timezone = "Europe/Berlin"
 # supported: dmy, mdy, ymd
 date_order = "dmy"
 
+# prefer the system locale when resolving ambiguous slash dates
+# like 03/04/2026. unambiguous dates like 12/31/2026 still parse.
+prefer_locale_date_order = true
+
 # clock display style.
 # supported: 24h, 12h
 time_notation = "24h"
@@ -29,6 +33,22 @@ volume = 0.20
 # relative paths are resolved from ~/.config/tix/
 # set to "none" or remove the key to use the built-in tone fallback.
 sound_file = "none"
+
+[notifications]
+# enable desktop notifications for background alarms.
+enabled = true
+
+# on Linux/XDG, clicking the notification body can stop the alarm.
+# macOS ignores this because notify-rust action callbacks are not supported there.
+clickable = true
+
+# notification timeout in milliseconds.
+# 0 means keep the notification open until the user dismisses it.
+timeout_ms = 0
+
+# on Linux/XDG, show an explicit Stop button next to the clickable body action.
+# ignored when clickable = false and ignored on macOS.
+show_stop_button = true
 
 [foreground]
 # minimum effective refresh interval is 100ms.

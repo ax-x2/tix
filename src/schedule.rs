@@ -124,7 +124,15 @@ mod tests {
 
     use super::*;
     use crate::parse::parse_alarm_spec;
-    use crate::types::DateOrder;
+    use crate::types::{DateOrder, DateParseConfig};
+
+    fn parse_config(order: DateOrder) -> DateParseConfig {
+        DateParseConfig {
+            fallback_order: order,
+            prefer_locale_order: false,
+            locale_order: None,
+        }
+    }
 
     #[test]
     fn time_only_future_stays_today() {
@@ -133,7 +141,7 @@ mod tests {
             .with_ymd_and_hms(2026, 3, 12, 12, 0, 0)
             .single()
             .unwrap();
-        let spec = parse_alarm_spec("13:30", DateOrder::Dmy).unwrap();
+        let spec = parse_alarm_spec("13:30", parse_config(DateOrder::Dmy)).unwrap();
 
         let resolved = resolve_alarm_with_now(spec, timezone, now).unwrap();
 
@@ -153,7 +161,7 @@ mod tests {
             .with_ymd_and_hms(2026, 3, 12, 14, 0, 0)
             .single()
             .unwrap();
-        let spec = parse_alarm_spec("13:30", DateOrder::Dmy).unwrap();
+        let spec = parse_alarm_spec("13:30", parse_config(DateOrder::Dmy)).unwrap();
 
         let resolved = resolve_alarm_with_now(spec, timezone, now).unwrap();
 
@@ -173,7 +181,7 @@ mod tests {
             .with_ymd_and_hms(2026, 10, 24, 12, 0, 0)
             .single()
             .unwrap();
-        let spec = parse_alarm_spec("2026-10-25 02:30", DateOrder::Dmy).unwrap();
+        let spec = parse_alarm_spec("2026-10-25 02:30", parse_config(DateOrder::Dmy)).unwrap();
 
         let result = resolve_alarm_with_now(spec, timezone, now);
 
@@ -187,7 +195,7 @@ mod tests {
             .with_ymd_and_hms(2026, 3, 29, 12, 0, 0)
             .single()
             .unwrap();
-        let spec = parse_alarm_spec("02:30", DateOrder::Dmy).unwrap();
+        let spec = parse_alarm_spec("02:30", parse_config(DateOrder::Dmy)).unwrap();
 
         let resolved = resolve_alarm_with_now(spec, timezone, now).unwrap();
 
@@ -207,7 +215,7 @@ mod tests {
             .with_ymd_and_hms(2026, 10, 25, 12, 0, 0)
             .single()
             .unwrap();
-        let spec = parse_alarm_spec("02:30", DateOrder::Dmy).unwrap();
+        let spec = parse_alarm_spec("02:30", parse_config(DateOrder::Dmy)).unwrap();
 
         let resolved = resolve_alarm_with_now(spec, timezone, now).unwrap();
 
