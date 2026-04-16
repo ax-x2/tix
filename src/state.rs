@@ -1,13 +1,11 @@
 use chrono::{DateTime, Utc};
 use std::env;
-use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io;
 #[cfg(target_os = "linux")]
 use std::io::ErrorKind;
 #[cfg(target_os = "macos")]
 use std::mem;
-use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -353,20 +351,6 @@ fn is_tracked_worker_process(pid: u32, alarm_id: Option<&str>) -> AppResult<bool
 
 #[cfg(target_os = "linux")]
 fn process_matches_tix_worker(pid: u32, alarm_id: Option<&str>) -> AppResult<bool> {
-    let expected_executable = current_executable_path()?;
-    let process_executable = match linux_process_executable_path(pid) {
-        Ok(path) => path,
-        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(false),
-        Err(err) => {
-            return Err(format!(
-                "failed to inspect process executable for {pid}: {err}"
-            ));
-        }
-    };
-    if !paths_equivalent(&expected_executable, &process_executable) {
-        return Ok(false);
-    }
-
     let cmdline_path = PathBuf::from(format!("/proc/{pid}/cmdline"));
     let raw = match fs::read(&cmdline_path) {
         Ok(raw) => raw,
@@ -379,25 +363,11 @@ fn process_matches_tix_worker(pid: u32, alarm_id: Option<&str>) -> AppResult<boo
         }
     };
 
-    Ok(cmdline_matches_worker(&raw, &expected_executable, alarm_id))
+    Ok(cmdline_matches_worker(&raw, alarm_id))
 }
 
 #[cfg(target_os = "macos")]
 fn process_matches_tix_worker(pid: u32, alarm_id: Option<&str>) -> AppResult<bool> {
-    let expected_executable = current_executable_path()?;
-    let process_executable = match macos_process_executable_path(pid) {
-        Ok(path) => path,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => {
-            return Err(format!(
-                "failed to inspect process executable for {pid}: {err}"
-            ));
-        }
-    };
-    if !paths_equivalent(&expected_executable, &process_executable) {
-        return Ok(false);
-    }
-
     let raw = match macos_process_arguments(pid) {
         Ok(raw) => raw,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
@@ -408,11 +378,7 @@ fn process_matches_tix_worker(pid: u32, alarm_id: Option<&str>) -> AppResult<boo
         }
     };
 
-    Ok(macos_procargs_match_worker(
-        &raw,
-        &expected_executable,
-        alarm_id,
-    ))
+    Ok(macos_procargs_match_worker(&raw, alarm_id))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -420,28 +386,10 @@ fn process_matches_tix_worker(_pid: u32, _alarm_id: Option<&str>) -> AppResult<b
     Ok(false)
 }
 
-fn current_executable_path() -> AppResult<PathBuf> {
-    env::current_exe().map_err(|err| format!("failed to resolve current executable: {err}"))
-}
-
-fn paths_equivalent(left: &Path, right: &Path) -> bool {
-    if left == right {
-        return true;
-    }
-
-    match (fs::canonicalize(left), fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
-}
-
 #[cfg(any(test, target_os = "linux"))]
-fn cmdline_matches_worker(raw: &[u8], expected_executable: &Path, alarm_id: Option<&str>) -> bool {
+fn cmdline_matches_worker(raw: &[u8], alarm_id: Option<&str>) -> bool {
     let mut parts = split_nul_terminated(raw);
-    let Some(executable) = parts.next() else {
-        return false;
-    };
-    if !path_bytes_match(executable, expected_executable) {
+    if parts.next().is_none() {
         return false;
     }
 
@@ -465,38 +413,6 @@ fn cmdline_matches_worker(raw: &[u8], expected_executable: &Path, alarm_id: Opti
 #[cfg(any(test, target_os = "linux"))]
 fn split_nul_terminated(raw: &[u8]) -> impl Iterator<Item = &[u8]> {
     raw.split(|byte| *byte == 0).filter(|part| !part.is_empty())
-}
-
-fn path_bytes_match(raw: &[u8], expected_path: &Path) -> bool {
-    paths_equivalent(Path::new(OsStr::from_bytes(raw)), expected_path)
-}
-
-#[cfg(target_os = "linux")]
-fn linux_process_executable_path(pid: u32) -> io::Result<PathBuf> {
-    fs::read_link(PathBuf::from(format!("/proc/{pid}/exe")))
-}
-
-#[cfg(target_os = "macos")]
-fn macos_process_executable_path(pid: u32) -> io::Result<PathBuf> {
-    let mut buffer = vec![0_u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
-    let written = unsafe {
-        libc::proc_pidpath(
-            pid as i32,
-            buffer.as_mut_ptr() as *mut _,
-            libc::PROC_PIDPATHINFO_MAXSIZE as u32,
-        )
-    };
-
-    if written <= 0 {
-        let err = io::Error::last_os_error();
-        return Err(match err.raw_os_error() {
-            Some(code) if code == libc::ESRCH => io::Error::from(io::ErrorKind::NotFound),
-            _ => err,
-        });
-    }
-
-    buffer.truncate(written as usize);
-    Ok(PathBuf::from(OsStr::from_bytes(&buffer)))
 }
 
 #[cfg(target_os = "macos")]
@@ -537,11 +453,7 @@ fn macos_process_arguments(pid: u32) -> io::Result<Vec<u8>> {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_procargs_match_worker(
-    raw: &[u8],
-    expected_executable: &Path,
-    alarm_id: Option<&str>,
-) -> bool {
+fn macos_procargs_match_worker(raw: &[u8], alarm_id: Option<&str>) -> bool {
     let Some(argument_count_bytes) = raw.get(..mem::size_of::<libc::c_int>()) else {
         return false;
     };
@@ -567,15 +479,16 @@ fn macos_procargs_match_worker(
 
     let mut has_worker_marker = false;
     let mut has_alarm_id = alarm_id.is_none();
-    let mut saw_executable = false;
 
     for index in 0..argc {
         let Some((argument, next)) = next_nul_terminated(remainder) else {
             return false;
         };
         if index == 0 {
-            saw_executable = path_bytes_match(argument, expected_executable);
-        } else if argument == b"__worker" {
+            remainder = next;
+            continue;
+        }
+        if argument == b"__worker" {
             has_worker_marker = true;
         } else if let Some(alarm_id) = alarm_id
             && argument == alarm_id.as_bytes()
@@ -585,7 +498,7 @@ fn macos_procargs_match_worker(
         remainder = next;
     }
 
-    saw_executable && has_worker_marker && has_alarm_id
+    has_worker_marker && has_alarm_id
 }
 
 #[cfg(target_os = "macos")]
@@ -640,34 +553,27 @@ mod tests {
     }
 
     #[test]
-    fn linux_cmdline_match_requires_executable_marker_and_alarm_id() {
-        let executable = Path::new("/tmp/tix");
-        let raw = b"/tmp/tix\0__worker\0--alarm-id\0abc123\0";
+    fn linux_cmdline_match_requires_worker_marker_and_alarm_id() {
+        let raw = b"/tmp/old-build/tix\0__worker\0--alarm-id\0abc123\0";
 
-        assert!(cmdline_matches_worker(raw, executable, Some("abc123")));
-        assert!(!cmdline_matches_worker(raw, executable, Some("zzz")));
+        assert!(cmdline_matches_worker(raw, Some("abc123")));
+        assert!(!cmdline_matches_worker(raw, Some("zzz")));
         assert!(!cmdline_matches_worker(
-            b"/tmp/other\0__worker\0--alarm-id\0abc123\0",
-            executable,
+            b"/tmp/old-build/tix\0--alarm-id\0abc123\0",
             Some("abc123")
         ));
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_procargs_match_requires_executable_marker_and_alarm_id() {
-        let executable = Path::new("/tmp/tix");
+    fn macos_procargs_match_requires_worker_marker_and_alarm_id() {
         let mut raw = Vec::new();
         raw.extend_from_slice(&(4_i32).to_ne_bytes());
-        raw.extend_from_slice(b"/tmp/tix\0");
+        raw.extend_from_slice(b"/tmp/other-build/tix\0");
         raw.extend_from_slice(&[0, 0]);
-        raw.extend_from_slice(b"/tmp/tix\0__worker\0--alarm-id\0abc123\0");
+        raw.extend_from_slice(b"/tmp/other-build/tix\0__worker\0--alarm-id\0abc123\0");
 
-        assert!(macos_procargs_match_worker(
-            &raw,
-            executable,
-            Some("abc123")
-        ));
-        assert!(!macos_procargs_match_worker(&raw, executable, Some("zzz")));
+        assert!(macos_procargs_match_worker(&raw, Some("abc123")));
+        assert!(!macos_procargs_match_worker(&raw, Some("zzz")));
     }
 }
