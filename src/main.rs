@@ -22,7 +22,7 @@ use state::{
     active_alarm_states, parse_state_target_utc, remove_alarm_state_by_id, resolve_alarm_selector,
     schedule_background_alarm, terminate_process,
 };
-use types::{AlarmAudioConfig, AppResult, Command, Config, RunMode};
+use types::{AlarmAudioConfig, AlarmSessionOptions, AppResult, Command, Config, RunMode};
 
 fn main() {
     if let Err(err) = run() {
@@ -79,6 +79,7 @@ fn run() -> AppResult<()> {
         Command::VolumeTest { volume_override } => test_volume(volume_override),
         Command::Alarm {
             spec_text,
+            label,
             dry_run,
             timezone_override,
             mode_override,
@@ -88,7 +89,7 @@ fn run() -> AppResult<()> {
                 validate_timezone(&timezone)?;
                 config.timezone = timezone;
             }
-            run_alarm_command(config, &spec_text, dry_run, mode_override)
+            run_alarm_command(config, &spec_text, label.as_deref(), dry_run, mode_override)
         }
         Command::Worker {
             alarm_id,
@@ -97,8 +98,10 @@ fn run() -> AppResult<()> {
             volume,
             sound_file,
             notifications,
+            label,
         } => run_background_worker(
             alarm_id,
+            label,
             target_utc,
             auto_stop_seconds,
             AlarmAudioConfig { volume, sound_file },
@@ -110,6 +113,7 @@ fn run() -> AppResult<()> {
 fn run_alarm_command(
     config: Config,
     spec_text: &str,
+    label: Option<&str>,
     dry_run: bool,
     mode_override: Option<RunMode>,
 ) -> AppResult<()> {
@@ -133,6 +137,9 @@ fn run_alarm_command(
         "Alarm Ready"
     });
     print_detail("Input", spec_text);
+    if let Some(label) = label {
+        print_detail("Label", label);
+    }
     print_detail("Target", format_alarm_time(target, config.time_notation));
     print_detail("Remaining", format_pretty_duration(remaining));
     print_detail("Mode", mode_label(effective_mode));
@@ -152,6 +159,7 @@ fn run_alarm_command(
             config.time_notation,
             target,
             spec_text,
+            label,
         );
         let renderer_opt = if renderer.enabled() {
             Some(&mut renderer)
@@ -159,19 +167,23 @@ fn run_alarm_command(
             None
         };
         return run_alarm_session(
-            None,
+            AlarmSessionOptions {
+                alarm_id: None,
+                label: label.map(str::to_string),
+                log_events: true,
+                detached: false,
+                notifications: config.notifications.clone().into(),
+            },
             target_utc,
             config.auto_stop_seconds,
             &audio,
             renderer_opt,
-            true,
-            false,
-            config.notifications.clone().into(),
         );
     }
 
     let state = schedule_background_alarm(
         spec_text,
+        label,
         target_utc,
         config.auto_stop_seconds,
         &audio,
@@ -247,6 +259,9 @@ fn show_alarm_status() -> AppResult<()> {
         print_subsection(&format!("[{}] {}", index + 1, state.id));
         print_detail("PID", state.pid);
         print_detail("Input", &state.spec_text);
+        if let Some(label) = &state.label {
+            print_detail("Label", label);
+        }
         print_detail(
             "Target",
             format_alarm_time(target_local, config.time_notation),

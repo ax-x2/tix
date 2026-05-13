@@ -17,39 +17,42 @@ use std::time::{Duration, Instant};
 use crate::config::resolve_sound_file_path;
 use crate::display::ForegroundRenderer;
 use crate::state::ActiveAlarmGuard;
-use crate::types::{AlarmAudioConfig, AlarmNotificationConfig, AppResult, StopControl};
+use crate::types::{AlarmAudioConfig, AlarmNotificationConfig, AlarmSessionOptions, AppResult, StopControl};
 
 pub fn run_alarm_session(
-    alarm_id: Option<&str>,
+    opts: AlarmSessionOptions,
     target_utc: DateTime<Utc>,
     auto_stop_seconds: u64,
     audio: &AlarmAudioConfig,
     renderer: Option<&mut ForegroundRenderer>,
-    log_events: bool,
-    detached: bool,
-    notifications: AlarmNotificationConfig,
 ) -> AppResult<()> {
     let control = install_stop_signal_handler()?;
     wait_until(target_utc, &control, renderer)?;
     if control.stop.load(Ordering::Relaxed) {
-        if log_events {
+        if opts.log_events {
             println!("alarm cancelled before trigger.");
         }
         return Ok(());
     }
 
-    if log_events {
+    if opts.log_events {
         println!("alarm ringing. press ctrl-c to stop.");
     }
-    if detached {
-        send_background_alarm_notification(alarm_id, notifications, &control);
+    if opts.detached {
+        send_background_alarm_notification(
+            opts.alarm_id.as_deref(),
+            opts.label.as_deref(),
+            opts.notifications,
+            &control,
+        );
     }
-    ring_alarm(audio, auto_stop_seconds, &control, log_events);
+    ring_alarm(audio, auto_stop_seconds, &control, opts.log_events);
     Ok(())
 }
 
 pub fn run_background_worker(
     alarm_id: String,
+    label: Option<String>,
     target_utc: DateTime<Utc>,
     auto_stop_seconds: u64,
     audio: AlarmAudioConfig,
@@ -57,14 +60,17 @@ pub fn run_background_worker(
 ) -> AppResult<()> {
     let _guard = ActiveAlarmGuard::new(alarm_id.clone())?;
     run_alarm_session(
-        Some(&alarm_id),
+        AlarmSessionOptions {
+            alarm_id: Some(alarm_id),
+            label,
+            log_events: false,
+            detached: true,
+            notifications,
+        },
         target_utc,
         auto_stop_seconds,
         &audio,
         None,
-        false,
-        true,
-        notifications,
     )
 }
 
@@ -368,6 +374,7 @@ fn bell_pulse() {
 
 fn send_background_alarm_notification(
     alarm_id: Option<&str>,
+    label: Option<&str>,
     notifications: AlarmNotificationConfig,
     control: &StopControl,
 ) {
@@ -375,7 +382,7 @@ fn send_background_alarm_notification(
         return;
     }
 
-    if let Err(err) = notify_background_alarm(alarm_id, notifications, control) {
+    if let Err(err) = notify_background_alarm(alarm_id, label, notifications, control) {
         eprintln!("tix: background notification failed ({err})");
     }
 }
@@ -383,12 +390,13 @@ fn send_background_alarm_notification(
 #[cfg(target_os = "macos")]
 fn notify_background_alarm(
     alarm_id: Option<&str>,
+    label: Option<&str>,
     notifications: AlarmNotificationConfig,
     _control: &StopControl,
 ) -> io::Result<()> {
     let mut notification = Notification::new();
     notification
-        .summary("tix alarm")
+        .summary(label.unwrap_or("tix alarm"))
         .body(&notification_body(alarm_id, false, false))
         .timeout(notification_timeout(notifications.timeout_ms))
         .show()
@@ -399,12 +407,13 @@ fn notify_background_alarm(
 #[cfg(target_os = "linux")]
 fn notify_background_alarm(
     alarm_id: Option<&str>,
+    label: Option<&str>,
     notifications: AlarmNotificationConfig,
     control: &StopControl,
 ) -> io::Result<()> {
     let mut notification = Notification::new();
     notification
-        .summary("tix alarm")
+        .summary(label.unwrap_or("tix alarm"))
         .body(&notification_body(
             alarm_id,
             notifications.clickable,
@@ -435,6 +444,7 @@ fn notify_background_alarm(
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn notify_background_alarm(
     _alarm_id: Option<&str>,
+    _label: Option<&str>,
     _notifications: AlarmNotificationConfig,
     _control: &StopControl,
 ) -> io::Result<()> {

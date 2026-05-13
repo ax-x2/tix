@@ -2,10 +2,6 @@
 
 🕞 tix is a small rust alarm and timer cli.
 
-<p align="center">
-  <img src="tix_logo.svg" alt="tix logo" width="360">
-</p>
-
 you can use it for:
 - relative timers like `tix 10m`
 - absolute alarms like `tix 12.03.2026 13:30`
@@ -13,6 +9,7 @@ you can use it for:
 - time-only alarms like `tix 13:30` or `tix 01:30pm`
 - multiple background alarms at the same time
 - foreground mode with a live clock/countdown view
+- labels `tix 12/31/2030 8:15pm "go touch grass"`
 
 ## install
 
@@ -33,7 +30,7 @@ cargo install --path .
 schedule a background alarm:
 
 ```bash
-tix 10m
+tix 10m "my new alarm"
 ```
 
 run in foreground:

@@ -17,6 +17,7 @@ use crate::types::{ActiveAlarmState, AlarmAudioConfig, AlarmNotificationConfig, 
 
 pub fn schedule_background_alarm(
     spec_text: &str,
+    label: Option<&str>,
     target_utc: DateTime<Utc>,
     auto_stop_seconds: u64,
     audio: &AlarmAudioConfig,
@@ -25,6 +26,7 @@ pub fn schedule_background_alarm(
     let alarm_id = generate_alarm_id()?;
     let pid = spawn_background_worker(
         &alarm_id,
+        label,
         target_utc,
         auto_stop_seconds,
         audio,
@@ -34,6 +36,7 @@ pub fn schedule_background_alarm(
         id: alarm_id,
         pid,
         spec_text: spec_text.to_string(),
+        label: label.map(str::to_string),
         target_utc: target_utc.to_rfc3339(),
         created_at_utc: Utc::now().to_rfc3339(),
         auto_stop_seconds,
@@ -220,6 +223,7 @@ fn clear_alarm_state_if_matches(path: &Path, alarm_id: &str) -> AppResult<()> {
 #[cfg(unix)]
 fn spawn_background_worker(
     alarm_id: &str,
+    label: Option<&str>,
     target_utc: DateTime<Utc>,
     auto_stop_seconds: u64,
     audio: &AlarmAudioConfig,
@@ -275,6 +279,9 @@ fn spawn_background_worker(
     if let Some(sound_file) = &audio.sound_file {
         command.arg("--sound-file").arg(sound_file);
     }
+    if let Some(label) = label {
+        command.arg("--label").arg(label);
+    }
 
     unsafe {
         command.pre_exec(|| {
@@ -295,6 +302,7 @@ fn spawn_background_worker(
 #[cfg(not(unix))]
 fn spawn_background_worker(
     _alarm_id: &str,
+    _label: Option<&str>,
     _target_utc: DateTime<Utc>,
     _auto_stop_seconds: u64,
     _audio: &AlarmAudioConfig,
@@ -516,6 +524,7 @@ mod tests {
             id: id.to_string(),
             pid: 1,
             spec_text: "10m".to_string(),
+            label: None,
             target_utc: "2026-03-12T12:30:00Z".to_string(),
             created_at_utc: "2026-03-12T12:20:00Z".to_string(),
             auto_stop_seconds: 0,

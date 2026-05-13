@@ -9,7 +9,7 @@ pub const HELP: &str = "\
 tix - clock alarm timer
 
 Usage:
-  tix [--dry-run] [-f|--foreground] [-b|--background] [--timezone <IANA-TZ>] <when>
+  tix [--dry-run] [-f|--foreground] [-b|--background] [--timezone <IANA-TZ>] <when> [\"label\"]
   tix status
   tix stop [<id>|--all]
   tix volume
@@ -23,9 +23,11 @@ Usage:
 
 Examples:
   tix 10m
+  tix 10m \"take a break\"
   tix -f 10m
   tix -b 10m
   tix 13:30
+  tix 13:30 \"call this dude\"
   tix 01:30pm
   tix 12/31/2026 8:15pm
   tix 12.03.2026 13:30
@@ -37,6 +39,7 @@ Examples:
   tix volume test
 
 Notes:
+  - An optional label can be added as the last positional argument.
   - CLI mode flags override the configured default mode.
   - slash dates accept unambiguous inputs in any common order.
   - ambiguous slash dates follow the locale-aware config policy.
@@ -95,8 +98,11 @@ where
         return Err("missing alarm input\n\n".to_owned() + HELP);
     }
 
+    let (spec_text, label) = split_spec_and_label(parts);
+
     Ok(Command::Alarm {
-        spec_text: parts.join(" "),
+        spec_text,
+        label,
         dry_run,
         timezone_override,
         mode_override,
@@ -280,6 +286,7 @@ where
     let mut auto_stop_seconds = 0_u64;
     let mut volume = None;
     let mut sound_file = None;
+    let mut label = None;
     let mut notifications_enabled = true;
     let mut notifications_clickable = true;
     let mut notifications_timeout_ms = 0_u32;
@@ -321,6 +328,12 @@ where
                     return Err("__worker requires --sound-file <path>".to_string());
                 };
                 sound_file = Some(value);
+            }
+            "--label" => {
+                let Some(value) = args.next() else {
+                    return Err("__worker requires --label <text>".to_string());
+                };
+                label = Some(value);
             }
             "--notifications-enabled" => {
                 let Some(value) = args.next() else {
@@ -364,6 +377,7 @@ where
         auto_stop_seconds,
         volume: volume.ok_or_else(|| "__worker requires --volume <0.0..=1.0>".to_string())?,
         sound_file,
+        label,
         notifications: AlarmNotificationConfig {
             enabled: notifications_enabled,
             clickable: notifications_clickable,
@@ -371,6 +385,30 @@ where
             show_stop_button: notifications_show_stop_button,
         },
     })
+}
+
+fn split_spec_and_label(parts: Vec<String>) -> (String, Option<String>) {
+    if parts.len() < 2 {
+        return (parts.into_iter().collect(), None);
+    }
+    let last = parts.last().unwrap();
+    if !could_be_time_component(last) {
+        let label = last.clone();
+        let spec = parts[..parts.len() - 1].join(" ");
+        return (spec, Some(label));
+    }
+    (parts.join(" "), None)
+}
+
+fn could_be_time_component(s: &str) -> bool {
+    if !s.bytes().any(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    s.contains(':')
+        || s.contains('/')
+        || s.contains('.')
+        || s.contains('-')
+        || s.ends_with(['s', 'm', 'h', 'd', 'w'])
 }
 
 fn normalize_spec_text(input: &str) -> String {

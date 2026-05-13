@@ -234,6 +234,7 @@ pub struct DateParseConfig {
 pub enum Command {
     Alarm {
         spec_text: String,
+        label: Option<String>,
         dry_run: bool,
         timezone_override: Option<String>,
         mode_override: Option<RunMode>,
@@ -245,6 +246,7 @@ pub enum Command {
         volume: f32,
         sound_file: Option<String>,
         notifications: AlarmNotificationConfig,
+        label: Option<String>,
     },
     Status,
     Stop {
@@ -281,6 +283,7 @@ pub struct ActiveAlarmState {
     pub id: String,
     pub pid: u32,
     pub spec_text: String,
+    pub label: Option<String>,
     pub target_utc: String,
     pub created_at_utc: String,
     pub auto_stop_seconds: u64,
@@ -292,4 +295,12 @@ pub struct StopControl {
     pub stop: Arc<AtomicBool>,
     pub wake_tx: mpsc::SyncSender<()>,
     pub wake_rx: mpsc::Receiver<()>,
+}
+
+pub struct AlarmSessionOptions {
+    pub alarm_id: Option<String>,
+    pub label: Option<String>,
+    pub log_events: bool,
+    pub detached: bool,
+    pub notifications: AlarmNotificationConfig,
 }

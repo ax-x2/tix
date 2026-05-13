@@ -30,7 +30,12 @@ impl ForegroundRenderer {
         time_notation: TimeNotation,
         target_local: DateTime<Tz>,
         spec_text: &str,
+        label: Option<&str>,
     ) -> Self {
+        let title_line = match label {
+            Some(label) => format!("TIX | {label}"),
+            None => String::from("TIX | Foreground Alarm"),
+        };
         Self {
             enabled: io::stdout().is_terminal(),
             settings,
@@ -39,7 +44,7 @@ impl ForegroundRenderer {
             target_local,
             target_utc: target_local.with_timezone(&Utc),
             spec_text: spec_text.to_string(),
-            title_line: String::from("TIX | Foreground Alarm"),
+            title_line,
             input_line: String::with_capacity(spec_text.len() + 7),
             current_line: String::with_capacity(48),
             target_line: String::with_capacity(48),
